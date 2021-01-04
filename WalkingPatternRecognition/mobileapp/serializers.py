@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from rest_framework.validators import UniqueTogetherValidator
 from django.contrib.auth.models import User
-from .models import Dog, MotionActivityPerDay, Activity, MotionActivity, DogStatus, Breed
+from .models import Dog, MotionActivityPerDay, Activity,MotionActivity, DogStatus, Breed
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -31,7 +31,7 @@ class DogSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Dog
-        fields = ('id', 'name', 'birthday', 'breed', 'gender', 'user')
+        fields = ('id', 'name', 'birthday', 'breed', 'gender', 'user', 'imageUrl')
 
 
 class ActivitySerializer(serializers.ModelSerializer):
@@ -51,7 +51,7 @@ class MotionActivitySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = MotionActivity
-        fields = ('user_id', 'dog_id', 'date', 'time', 'activity')
+        fields = ('user_id', 'dog_id', 'date', 'time', 'hour', 'activity')
 
 
 class DogStatusSerializer(serializers.ModelSerializer):

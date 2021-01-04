@@ -7,11 +7,12 @@ urlpatterns = [
 
   path('', views.index, name='index'),
   path('register', views.register, name='register'),
+  path('registerUser', views.registerUser),
   path('user/', UserRecordView.as_view(), name='users'),
 
   path('dogs/', views.DogList.as_view()),
   path('addDogProfile', views.add_DogProfile),
-  path('updateDogProfile/<int:dog_id>', views.update_DogProfile),
+  path('getDogsBasedOnUser', views.getDogsBasedOnUser),  path('updateDogProfile/<int:dog_id>', views.update_DogProfile),
   path('deleteDogProfile', views.delete_DogProfile),
 
   path('addMotionActivityPerDay', views.add_motionActivityPerDay),
@@ -45,6 +46,8 @@ urlpatterns = [
 
   # getting the readings
   path('readings', views.readings),
-  path('trainingReadings', views.trainingReadings)
+  path('trainingReadings', views.trainingReadings),
+  path('endOfEachDay', views.endOfEachDay),
+  path('compare', views.compare)
 
 ]

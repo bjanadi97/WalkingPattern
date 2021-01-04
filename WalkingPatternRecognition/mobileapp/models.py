@@ -13,9 +13,10 @@ class Dog(models.Model):
     )
     name = models.CharField(max_length=50)
     birthday = models.DateField()
-    breed = models.CharField(max_length=10)
+    breed = models.CharField(max_length=20)
     gender = models.CharField(max_length=1, choices=GENDER_TYPES)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
+    imageUrl = models.CharField(max_length=500)
 
     def __str__(self):
         return self.name
@@ -48,6 +49,7 @@ class MotionActivity(models.Model):
     dog = models.ForeignKey(Dog, on_delete=models.CASCADE)
     date = models.DateField(default=django.utils.timezone.now)
     time = models.DateTimeField()
+    hour = models.IntegerField(null=True)
     activity = models.IntegerField(null=True)
 
     def __str__(self):

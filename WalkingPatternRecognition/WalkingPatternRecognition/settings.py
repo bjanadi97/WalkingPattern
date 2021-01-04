@@ -28,7 +28,7 @@ SECRET_KEY = '^^46u_fc$#)x5ji*s#l3p6igr9*6fwknxevip$ozw8#-m=*#f0'
 DEBUG = True
 
 
-ALLOWED_HOSTS = ['192.168.1.49', 'localhost', '127.0.0.1']
+ALLOWED_HOSTS = ['192.168.1.7', 'localhost', '127.0.0.1']
 
 
 CORS_ORIGIN_ALLOW_ALL = False
@@ -56,7 +56,7 @@ INSTALLED_APPS = [
     'allauth',
     'allauth.account',
     'rest_auth.registration',
-    'corsheaders'
+    'corsheaders',
 ]
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 SITE_ID = 1
@@ -163,6 +163,13 @@ LOGIN_REDIRECT_URL = '/'
 
 STATICFILES_DIRS = [
 
+]
+
+PASSWORD_HASHERS = [
+    'django.contrib.auth.hashers.BCryptSHA256PasswordHasher',
+    'django.contrib.auth.hashers.PBKDF2PasswordHasher',
+    'django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher',
+    'django.contrib.auth.hashers.Argon2PasswordHasher',
 ]
 
 

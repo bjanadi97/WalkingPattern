@@ -1,6 +1,8 @@
 import json
 from datetime import timedelta
-from django.utils import timezone
+
+from background_task import background
+from background_task.models import Task
 from django.contrib.auth import authenticate, login
 from django.contrib.auth.forms import UserCreationForm
 from django.contrib.auth.models import User
@@ -10,15 +12,15 @@ from django.shortcuts import render, redirect
 from django.views.decorators.csrf import csrf_exempt
 from numba.cuda import const
 from rest_framework import status
+from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from .models import Dog, MotionActivityPerDay, Activity, MotionActivity, Breed, DogStatus
-from .serializers import DogSerializer, MotionActivityPerDaySerializer, ActivitySerializer, MotionActivitySerializer, \
-    BreedSerializer, DogStatusSerializer
+from .models import Dog, MotionActivityPerDay, Activity, Breed, DogStatus, MotionActivity
+from .serializers import DogSerializer, MotionActivityPerDaySerializer, ActivitySerializer, BreedSerializer, \
+    DogStatusSerializer, MotionActivitySerializer
 from .serializers import UserSerializer
-from datetime import datetime
 import calendar
 import requests
 from django.http import HttpResponse, response, request
@@ -28,8 +30,9 @@ import joblib
 import pandas as pd
 import numpy as np
 from sympy import fft
-from rest_framework.generics import CreateAPIView, GenericAPIView
 from datetime import datetime
+from rest_framework.authtoken.models import Token
+from django.contrib.auth.hashers import make_password
 
 
 def index(request):
@@ -45,12 +48,35 @@ def register(request):
             password = form.cleaned_data['password1']
             user = authenticate(username=username, password=password)
             login(request, user)
-            return redirect('user_example/index.html')
-
+            # return redirect('user_example/index.html')
+            return JsonResponse({'user': user, 'error': 'No error'}, safe=False, status=status.HTTP_201_CREATED)
     else:
         form = UserCreationForm()
     context = {'form': form}
     return render(request, 'registration/register.html', context)
+
+
+@api_view(["POST"])
+@csrf_exempt
+def registerUser(request):
+    payload = json.loads(request.body)
+    try:
+        user = authenticate(username=payload['username'], password=payload['password'])
+
+        userObject = User.objects.create(
+            username=payload["username"],
+            password=make_password(payload['password']),
+            email=payload["email"]
+        )
+        serializer = UserSerializer(userObject)
+        user = authenticate(username=payload['username'], password=make_password(payload['password']))
+        login(request, user)
+        return JsonResponse({'user': 'data', 'error': 'No'}, safe=False, status=status.HTTP_201_CREATED)
+    except ObjectDoesNotExist as e:
+        return JsonResponse({'error': str(e)}, safe=False, status=status.HTTP_404_NOT_FOUND)
+    except Exception:
+        return JsonResponse({'NoUserError': 'error'}, safe=False,
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class UserRecordView(APIView):
@@ -78,7 +104,32 @@ class UserRecordView(APIView):
         )
 
 
+class CustomAuthToken(ObtainAuthToken):
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.serializer_class(data=request.data,
+                                           context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        user = serializer.validated_data['user']
+        token, created = Token.objects.get_or_create(user=user)
+        return Response({
+            'token': token.key,
+            'user_id': user.pk,
+            'email': user.email
+        })
+
 # DOGS
+
+
+@api_view(["POST"])
+@csrf_exempt
+@permission_classes([IsAuthenticated])
+def getDogsBasedOnUser(request):
+    payload = json.loads(request.body)
+    dog = Dog.objects.filter(user_id=payload['userId'])
+    serializer = DogSerializer(dog, many=True)
+    return JsonResponse([{'dog': serializer.data[0]}], safe=False, status=status.HTTP_200_OK)
+
 
 class DogList(APIView):
     def get(self, request):
@@ -102,7 +153,8 @@ def add_DogProfile(request):
             birthday=payload["birthday"],
             breed=payload["breed"],
             gender=payload["gender"],
-            user=user
+            user=user,
+            imageUrl=payload['imageUrl']
         )
         serializer = DogSerializer(dog)
         return JsonResponse({'dog': serializer.data}, safe=False, status=status.HTTP_201_CREATED)
@@ -271,12 +323,15 @@ def delete_motionActivityPerDay(request, motion_id):
 @permission_classes([IsAuthenticated])
 def getTotalMinutesPerDay(request):
     payload = json.loads(request.body)
-    minutes = MotionActivityPerDay.objects.filter(activity=payload['activity'], dog=payload['dog'],
+    minutes = MotionActivity.objects.filter(activity=payload['activity'], dog=payload['dog'],
                                                   date=payload['date'])
-    serializer = MotionActivityPerDaySerializer(minutes, many=True)
+    serializer = MotionActivitySerializer(minutes, many=True)
 
     if len(serializer.data) > 0:
-        return JsonResponse([{'minutes per day': serializer.data[0]['timePeriod']}], safe=False,
+        dailyTotal = 0
+        for i in range(len(serializer.data)):
+            dailyTotal += 1
+        return JsonResponse([{'minutes per day': dailyTotal}], safe=False,
                             status=status.HTTP_200_OK)
     else:
         return JsonResponse([{'minutes per day': 0}], safe=False,
@@ -288,10 +343,21 @@ def getTotalMinutesPerDay(request):
 @permission_classes([IsAuthenticated])
 def getTotalMinutesPerHour(request):
     payload = json.loads(request.body)
-    minutes = MotionActivityPerDay.objects.filter(activity_id=payload['activity_id'], dog_id=payload['dog_id'],
-                                                  date=payload['date'], )
-    serializer = MotionActivityPerDaySerializer(minutes, many=True)
-    return JsonResponse({'minutes per hour': len(serializer.data)}, safe=False, status=status.HTTP_200_OK)
+    n = 24
+    hours = [None] * n
+    for i in range(24):
+        period = MotionActivity.objects.filter(activity=payload['activity'], dog=payload['dog'],
+                                               date=payload['date'], hour=i)
+        serializer1 = MotionActivitySerializer(period, many=True)
+
+        hourlyTotal = 0
+        if len(serializer1.data) > 0:
+            for j in range(len(serializer1.data)):
+                hourlyTotal += 1
+
+            hours[i] = hourlyTotal
+
+    return JsonResponse({'hour array': hours, 'date': payload['date']}, safe=False, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
@@ -301,39 +367,37 @@ def highlightsPerDay(request):
     payload = json.loads(request.body)
     ConvertedDate = datetime.strptime(payload['date'], "%Y-%m-%d").date()
     yesterday = ConvertedDate - timedelta(days=1)
-    todayActivity = MotionActivityPerDay.objects.filter(activity=payload['activity'], dog=payload['dog'],
+    todayActivity = MotionActivity.objects.filter(activity=payload['activity'], dog=payload['dog'],
                                                         date=payload['date'])
     yesterdayActivity = MotionActivityPerDay.objects.filter(activity=payload['activity'], dog=payload['dog'],
                                                             date=yesterday)
-    serializer1 = MotionActivityPerDaySerializer(todayActivity, many=True)
+    serializer1 = MotionActivitySerializer(todayActivity, many=True)
     serializer2 = MotionActivityPerDaySerializer(yesterdayActivity, many=True)
 
     if len(serializer1.data) == 0:
-        yesterday = 0
-    if len(serializer2.data) == 0:
         today = 0
+    if len(serializer2.data) == 0:
+        yesterdayTime = 0
+    if len(serializer2.data) != 0:
+        yesterdayTime = serializer2.data[0]['timePeriod']
+
+    dailyTotal = 0
+    for i in range(len(serializer1.data)):
+        dailyTotal += 1
+
+    if dailyTotal > yesterdayTime:
         return JsonResponse(
-                       [{'TODAY': today, 'YESTERDAY': yesterday, 'Highlights':
-                           'time is lower than yesterday'}], safe=False,
-                       status=status.HTTP_200_OK)
-    if serializer1.data[0]['timePeriod'] > serializer2.data[0]['timePeriod']:
-        return JsonResponse(
-            [{'TODAY': serializer1.data[0]['timePeriod'], 'YESTERDAY': serializer2.data[0]['timePeriod'], 'Highlights':
+            [{'TODAY': dailyTotal, 'YESTERDAY': yesterdayTime, 'Highlights':
                 'time is higher than yesterday'}], safe=False,
             status=status.HTTP_200_OK)
-    elif serializer1.data[0]['timePeriod'] < serializer2.data[0]['timePeriod']:
+    elif dailyTotal < yesterdayTime:
         return JsonResponse(
-            [{'TODAY': serializer1.data[0]['timePeriod'], 'YESTERDAY': serializer2.data[0]['timePeriod'], 'Highlights':
+            [{'TODAY': dailyTotal, 'YESTERDAY': yesterdayTime, 'Highlights':
                 'time is lower than yesterday'}], safe=False,
             status=status.HTTP_200_OK)
-    elif serializer1.data[0]['timePeriod'] == serializer2.data[0]['timePeriod']:
+    elif dailyTotal == yesterdayTime:
         return JsonResponse(
-            [{'TODAY': serializer1.data[0]['timePeriod'], 'YESTERDAY': serializer2.data[0]['timePeriod'], 'Highlights':
-                'time is equal to yesterday'}], safe=False,
-            status=status.HTTP_200_OK)
-    elif serializer1.data[0]['timePeriod'] == serializer2.data[0]['timePeriod']:
-        return JsonResponse(
-            [{'TODAY': serializer1.data[0]['timePeriod'], 'YESTERDAY': serializer2.data[0]['timePeriod'], 'Highlights':
+            [{'TODAY': dailyTotal, 'YESTERDAY': yesterdayTime, 'Highlights':
                 'time is equal to yesterday'}], safe=False,
             status=status.HTTP_200_OK)
 
@@ -613,7 +677,7 @@ def readings(request):
 def getReadings():
     ReadingsArray = []
 
-    responseObtained = requests.get('http://192.168.1.6/getReadings')
+    responseObtained = requests.get('http://192.168.1.7/getReadings')
 
     # if(responseObtained):
     #     print("Successfully Obtaining readings from ... http://192.168.1.6/getReadings")
@@ -686,7 +750,7 @@ class Main:
                 gd1 = GetData(dataset)
                 f = FeatureExtraction(gd1)
 
-                FeatureVector = f.getFeatureSingle(dataset)
+                FeatureVector = f.getSmallTestFeatureSingle(dataset)
                 append_list_as_row('FeatureVectorTest.csv', FeatureVector)
                 r = Data('FeatureVectorTest.csv')
                 predictingActivity = r.ReadData()
@@ -695,8 +759,8 @@ class Main:
                 break
             i = i + 30
 
-            # Start a scheduler to get the activity count at the end of the day
-            endOfTheDay()
+            # # Start a scheduler to get the activity count at the end of the day
+            # end()
 
 
 class Data:
@@ -884,7 +948,7 @@ class FeatureExtraction:
         fe = FeatureExtraction(list)
         feature = [fe.MinimumPeak(X), fe.MinimumPeak(Y), fe.MinimumPeak(Z), fe.MaximumPeak(X), fe.MaximumPeak(Y),
                    fe.MaximumPeak(Z), fe.Mean(X), fe.Mean(Y), fe.Mean(Z), times[0], times[1]]
-        print("Feature Vector \n", feature, "\n\n")
+        print("Small Feature Vector \n", feature, "\n\n")
         return feature
 
 
@@ -917,6 +981,7 @@ class ReadData:
 
 class Test:
     data = ''
+    activity = ''
 
     def __init__(self, data):
         self.data = data
@@ -924,8 +989,11 @@ class Test:
             with open("FeatureVectorTest.csv", 'w') as f1:
                 for line in f:
                     f1.close()
-        append_list_as_row('FeatureVectorTest.csv', ['Xmin', 'Ymin', 'Zmin', 'Xmax',
-                                                     'Ymax', 'Zmax', 'Xmean', 'Ymean', 'Zmean', 'StartTime', 'EndTime'])
+        append_list_as_row('FeatureVectorTest.csv', ['AccXmin', 'AccYmin', 'AccZmin', 'AccXmax',
+                                                     'AccYmax', 'AccZmax', 'AccXmean', 'AccYmean', 'AccZmean',
+                                                     'GyrXmin', 'GyrYmin', 'GyrZmin', 'GyrXmax',
+                                                     'GyrYmax', 'GyrZmax', 'GyrXmean', 'GyrYmean', 'GyrZmean',
+                                                     'StartTime', 'EndTime'])
         Times = data.loc[:, ['StartTime', 'EndTime']]
         data = data.drop(['StartTime', 'EndTime'], axis=1)
         X_test = data[:]
@@ -937,9 +1005,8 @@ class Test:
         dictionary = []
 
         # load the Gaussian Bayes Model from disk
-        filename = 'SimplifiedFinalSVMModel.sav'
+        filename = 'Janadi.sav'
         model = joblib.load(filename)
-
         prediction = model.predict(X_test)
         activityPrediction = prediction.tolist().pop()
 
@@ -950,17 +1017,21 @@ class Test:
         if activityPrediction == 2:
             activity = 'run'
 
-        print("PREDICTION ---->", activity, "-", activityPrediction, "\n\n")
+        print("PREDICTION ---->", activityPrediction, " ", activity, "\n\n")
 
+        times = StartTime.split(" ")
+        time_object = datetime.strptime(times[1], '%H:%M:%S.%f').time()
+        hour = time_object.hour
 
-        # date = datetime.utcnow().strftime("%Y-%m-%d")
-        # ConvertedDate = datetime.strptime(date, "%Y-%m-%d").date()
-        ConvertedDate = datetime.now()
+        date = datetime.utcnow().strftime("%Y-%m-%d")
+        ConvertedDate = datetime.strptime(date, "%Y-%m-%d").date()
+        # ConvertedDate = datetime.now()
         motion = MotionActivity.objects.create(
             user_id=1,
             dog_id=1,
             date=ConvertedDate,
             time=StartTime,
+            hour=hour,
             activity=activityPrediction
         )
         MotionActivitySerializer(motion)
@@ -974,7 +1045,7 @@ class Test:
         dictionary.append(activityPrediction)
 
         d = Data(ActivityArray)
-        append_list_as_row('DogData.csv', ActivityArray)
+        append_list_as_row('FeatureVectorsTest.csv', ActivityArray)
 
         Dictionary(dictionary)
 
@@ -992,15 +1063,43 @@ class Dictionary:
 
 # ACTION AT THE END OF THE DAY
 
-def getBreedData():
-    breedData = Dog.objects.all()
-    serializer = DogSerializer(breedData, many=False)
-    return Response(serializer.data)
+@background()
+def printHello():
+    print("Hello")
+    status = DogStatus.objects.create(
+        user_id=1,
+        dog_id=1,
+        status='highh',
+
+    )
+    DogStatusSerializer(status)
 
 
-def endOfTheDay():
-    print("At the End of the day...")
-    d1 = Data('DogData.csv')
+def deleteMotionActivityTableData(request):
+    try:
+        activity = MotionActivity.objects.get()
+        activity.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    except ObjectDoesNotExist as e:
+        return JsonResponse({'error': str(e)}, safe=False, status=status.HTTP_404_NOT_FOUND)
+    except Exception:
+        return JsonResponse({'error': 'Something went wrong'}, safe=False, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+def endOfEachDay(request):
+    payload = json.loads(request.body)
+    breed = payload['breed']
+    dog = payload['dog_id']
+
+    sched = BackgroundScheduler()
+    sched.add_job(endOfTheDay(breed, dog), 'interval', days=1)
+    sched.start()
+    return JsonResponse({'data': "Comparison at the End of the Day"}, safe=False, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+def endOfTheDay(breed, dog):
+    print("At the End of the day...", datetime.now())
+    d1 = Data('FeatureVectorsTest.csv')
     data1 = d1.ReadData()
     r = ReadData(data1)
     result = r.returnArray(data1)
@@ -1016,7 +1115,7 @@ def endOfTheDay():
     runMinutes = result[2]
 
     # Compare the Breed Data
-    compareBreedData('German Shepherd', walkMinutes, runMinutes)
+    compareBreedData(breed, walkMinutes, runMinutes)
 
     # Add the final results to the Motion Activity Per Day table
 
@@ -1056,12 +1155,13 @@ def endOfTheDay():
     # )
     # MotionActivityPerDaySerializer(motion3)
 
-    with open("DogData.csv", 'r') as f:
-        with open("DogData.csv", 'w') as f1:
+    with open("FeatureVectorsTest.csv", 'r') as f:
+        with open("FeatureVectorsTest.csv", 'w') as f1:
             next(f, None)
             for line in f:
                 f1.close()
-    append_list_as_row('DogData.csv', ['StartTime', 'EndTime', 'Date', 'Activity'])
+    append_list_as_row('FeatureVectorsTest.csv', ['StartTime', 'EndTime', 'Date', 'Activity'])
+    return JsonResponse({'data': "Data obtained"}, safe=False, status=status.HTTP_201_CREATED)
 
 
 def compareBreedData(breed, walkingMinutes, runningMinutes):
@@ -1107,21 +1207,46 @@ def getBreedActivityData(breed):
     return value
 
 
-# TRAINING READINGS
+@api_view(["POST"])
+def compare(request):
+    printHello(schedule=10, repeat=Task.DAILY)
+    payload = json.loads(request.body)
+    breed = payload['breed']
+    ActivityMinutes = payload['time']
+    totalActivityMinutes, breedActivityMinutes = 0, 0
+    activityStatusOfTheDog = ''
+    print(breed)
+    breedActivityMinutes = getBreedActivityData(breed)
+    totalActivityMinutes = ActivityMinutes
 
-def trainingReadings(request):
-    sched = BackgroundScheduler()
-    # seconds can be replaced with minutes, hours, or days
-    sched.add_job(getTrainingReadings, 'interval', seconds=2)
-    sched.start()
-    return JsonResponse({'data': "Training Data obtained"}, safe=False, status=status.HTTP_201_CREATED)
+    halfValue = breedActivityMinutes / 2
+    if totalActivityMinutes > breedActivityMinutes:
+        print("The actual activity level of the dog is : " + str(breedActivityMinutes) + " minutes")
+        print("But the current activity level of the dog is " + str(totalActivityMinutes) + " minutes")
+        print("Activity level is high")
+        activityStatusOfTheDog = 'high'
+    elif totalActivityMinutes < halfValue:
+        print("The actual activity level of the dog is : " + str(breedActivityMinutes) + " minutes")
+        print("But the current activity level of the dog is " + str(totalActivityMinutes) + " minutes")
+        print("Therefore .. Activity level is low")
+        activityStatusOfTheDog = 'low'
+    elif (totalActivityMinutes <= breedActivityMinutes) and (totalActivityMinutes >= halfValue):
+        print("The actual activity level of the dog is : " + str(breedActivityMinutes) + " minutes")
+        print("But the current activity level of the dog is " + str(totalActivityMinutes) + " minutes")
+        print("Activity level is equal")
+        activityStatusOfTheDog = 'active'
+    return JsonResponse({'status': activityStatusOfTheDog}, safe=False, status=status.HTTP_201_CREATED)
+
+
+# TRAINING READINGS
 
 
 @csrf_exempt
 def getTrainingReadings():
+
     ReadingsArray = []
 
-    responseObtained = requests.get('http://192.168.1.36/getReadings')
+    responseObtained = requests.get('http://192.168.1.7/getReadings')
     result = responseObtained.text
     Array = result.split(",")
     length = len(Array)
@@ -1137,6 +1262,7 @@ def getTrainingReadings():
     numline = len(file.readlines())
     if numline < 31:
         append_list_as_row('TrainingRestReadings.csv', finalArray)
+
     else:
         # trying to get the prediction
         MainTraining()
@@ -1148,6 +1274,14 @@ def getTrainingReadings():
         append_list_as_row('TrainingRestReadings.csv', ['timestamp', 'accelerometer_X', 'accelerometer_Y',
                                                         'accelerometer_Z', 'gyroscope_X', 'gyroscope_Y', 'gyroscope_Z'])
     return HttpResponse(response)
+
+
+def trainingReadings(request):
+    sched = BackgroundScheduler()
+    # seconds can be replaced with minutes, hours, or days
+    sched.add_job(getTrainingReadings, 'interval', seconds=2)
+    sched.start()
+    return JsonResponse({'data': "Training Data obtained"}, safe=False, status=status.HTTP_201_CREATED)
 
 
 class MainTraining:
@@ -1173,7 +1307,7 @@ class MainTraining:
                 f = FeatureExtraction(gd1)
                 FeatureVector = f.getSmallTestFeatureSingle(dataset)
 
-                d.append_list_as_row('FeatureVectorsRestTrain.csv', FeatureVector)
+                d.append_list_as_row('FeatureVectorsRest2Train.csv', FeatureVector)
             else:
                 break
             i = i + 30

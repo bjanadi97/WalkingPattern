@@ -16,12 +16,15 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 from rest_framework.authtoken import views
+from mobileapp.views import CustomAuthToken
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('accounts/', include('django.contrib.auth.urls')),
     path('', include('mobileapp.urls', namespace='api')),
+    path('auth', CustomAuthToken.as_view(), name='api-token-auth')
 
-    path('auth/', views.obtain_auth_token, name='api-token-auth'),
+    # path('auth/', views.obtain_auth_token, name='api-token-auth'),
+
 
 ]
